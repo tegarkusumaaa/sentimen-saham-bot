@@ -1,0 +1,62 @@
+name: Debug Sources
+
+# Workflow ini TIDAK terjadwal. Hanya jalan kalau ditekan manual dari tab Actions.
+on:
+  workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: 'Kirim juga pesan tes ke grup Telegram?'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Langkah ini tidak butuh satu pun secret. Murni cek sumber data.
+      - name: Cek semua sumber berita
+        env:
+          LOOKBACK_HOURS: '30'
+        run: python debug_sources.py
+
+      - name: Cek identitas bot Telegram
+        if: ${{ inputs.test_telegram }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          echo "--- getMe (memverifikasi token valid) ---"
+          curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
+          echo ""
+
+      - name: Kirim pesan tes ke grup
+        if: ${{ inputs.test_telegram }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "--- sendMessage (memverifikasi chat id & bot ada di grup) ---"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="HTML" \
+            -d text="✅ <b>Tes koneksi berhasil.</b>%0ABot sudah bisa mengirim ke grup ini."
+          echo ""
