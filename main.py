@@ -49,6 +49,20 @@ GEMINI_MODELS = [
 # lebih lama jauh lebih berguna daripada langsung menyerah.
 GEMINI_ATTEMPTS = int(os.environ.get("GEMINI_ATTEMPTS", "4"))
 
+# --- Groq: penyedia cadangan kalau Gemini sedang tumbang ---------------------
+# Gratis, tanpa kartu kredit, format API kompatibel OpenAI.
+# Daftar model yang aktif: https://console.groq.com/docs/models
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+GROQ_ATTEMPTS = int(os.environ.get("GROQ_ATTEMPTS", "3"))
+
+# Urutan percobaan. Ubah jadi "groq,gemini" kalau mau Groq duluan.
+LLM_ORDER = [
+    name.strip().lower()
+    for name in os.environ.get("LLM_ORDER", "gemini,groq").split(",")
+    if name.strip()
+]
+
 # Berapa jam ke belakang berita dianggap relevan. 30 jam = 24 jam + buffer,
 # karena jam publikasi RSS sering tidak presisi.
 LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "30"))
@@ -119,15 +133,22 @@ GOOGLE_NEWS_QUERIES = [
 # RSS langsung dari media. Ini backup penting: kalau IP GitHub Actions kena
 # rate-limit Google News, feed ini biasanya tetap jalan.
 # strict=True -> headline disaring dulu pakai RELEVANCE_KEYWORDS (feed umum).
+# Sudah dibuang karena membalas HTTP 403 dari runner GitHub (cek 20 Okt 2026):
+# CNBC Indonesia, Kontan, Bisnis.com, CNN Indonesia, Tempo. Situs-situs itu
+# memblokir IP pusat data lewat Cloudflare. Antara Ekonomi dibuang karena
+# feed-nya hidup tapi isinya tidak pernah segar.
 EXTRA_RSS_FEEDS = [
-    ("CNBC Indonesia - Market", "https://www.cnbcindonesia.com/market/rss", False),
-    ("CNBC Indonesia - News", "https://www.cnbcindonesia.com/news/rss", True),
+    # Terbukti bekerja.
     ("Detik Finance", "https://finance.detik.com/rss", True),
-    ("Kontan Investasi", "https://investasi.kontan.co.id/rss", False),
-    ("Bisnis.com Market", "https://market.bisnis.com/rss", False),
-    ("Antara Ekonomi", "https://www.antaranews.com/rss/ekonomi", True),
-    ("CNN Indonesia Ekonomi", "https://www.cnnindonesia.com/ekonomi/rss", True),
-    ("Tempo Bisnis", "https://www.tempo.co/rss/bisnis", True),
+    # Kandidat, belum terverifikasi. Jalankan Debug Sources untuk mengecek,
+    # lalu hapus baris yang berstatus MATI.
+    ("Detik Bursa & Valas", "https://finance.detik.com/bursa-dan-valas/rss", False),
+    ("Okezone Economy", "https://economy.okezone.com/rss", True),
+    ("Sindonews Ekbis", "https://ekbis.sindonews.com/rss", True),
+    ("Liputan6 Bisnis", "https://feed.liputan6.com/rss/bisnis", True),
+    ("Suara Bisnis", "https://www.suara.com/rss/bisnis", True),
+    ("Merdeka Uang", "https://www.merdeka.com/feed/uang", True),
+    ("Emitennews", "https://www.emitennews.com/feed", False),
 ]
 
 RELEVANCE_KEYWORDS = [
@@ -452,13 +473,26 @@ Sektor — 🟢 Bullish / 🔴 Bearish / 🟡 Netral — alasan singkat — emit
 **PANDANGAN IHSG HARI INI**
 Bias (bullish/bearish/sideways), level/area yang diperhatikan kalau bisa disimpulkan, dan 1-2 risiko utama.
 
-ATURAN KETAT:
+AKURASI:
 - Hanya gunakan informasi dari data di atas. Jangan mengarang berita, angka, atau corporate action.
-- Kalau sebuah bagian tidak punya dasar data, tulis apa adanya bahwa tidak ada informasi.
+- Kalau sebuah bagian tidak punya dasar data, tulis satu baris bahwa tidak ada informasi. Jangan diisi spekulasi.
 - Kode emiten harus 4 huruf kapital yang benar-benar ada di IDX.
-- Bahasa Indonesia, padat, lugas, tanpa basa-basi pembuka.
-- FORMAT: teks biasa. Penebalan HANYA dengan **dua bintang**. Bullet pakai tanda minus di awal baris. Jangan pakai heading #, tabel, atau link.
-- Maksimal sekitar 2800 karakter.
+- Jangan mengulang informasi yang sama di dua bagian berbeda.
+
+GAYA PENULISAN (ini yang paling sering dilanggar, patuhi ketat):
+- Satu kalimat maksimal 22 kata. Pecah kalimat panjang jadi dua.
+- Satu bullet berisi satu gagasan saja. Jangan menumpuk tiga fakta dalam satu bullet.
+- Tulis angka apa adanya tanpa penjelasan berlebihan. Contoh baik: "IHSG 5.185 (-11,57%)".
+- Pakai bahasa Indonesia. Istilah asing hanya kalau tidak ada padanannya, dan ditulis biasa tanpa penanda apa pun.
+- Langsung ke inti. Jangan menulis kalimat pembuka, penutup, atau basa-basi.
+- Jangan memakai kata pengisi seperti "kendati demikian", "sementara itu", "perlu dicatat bahwa".
+
+FORMAT (penting, output dikirim ke Telegram):
+- Penebalan HANYA dengan **dua bintang**. Contoh: **MAKRO & MONETER**.
+- JANGAN PERNAH memakai satu bintang untuk miring. Jangan memakai garis bawah, heading #, tabel, link, atau blok kode.
+- Bullet diawali tanda minus di awal baris.
+- Beri satu baris kosong antar bagian.
+- Total maksimal 2.200 karakter. Ini batas keras supaya muat dalam satu pesan Telegram. Kalau data terlalu banyak, pilih yang paling berdampak dan buang sisanya.
 """
 
 
@@ -509,11 +543,82 @@ def analyze_with_gemini(prompt: str) -> str:
     raise RuntimeError(f"Semua percobaan Gemini gagal: {last_error}")
 
 
+def analyze_with_groq(prompt: str) -> str:
+    """Groq memakai format API OpenAI, jadi cukup requests biasa."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("GROQ_API_KEY kosong.")
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.35,
+    }
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    last_error: Exception | None = None
+    for attempt in range(GROQ_ATTEMPTS):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=90)
+            if resp.status_code == 200:
+                text = resp.json()["choices"][0]["message"]["content"].strip()
+                if text:
+                    log(f"   . Groq OK via {GROQ_MODEL}")
+                    return text
+                last_error = RuntimeError("Groq mengembalikan teks kosong")
+            else:
+                last_error = RuntimeError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+        except Exception as exc:
+            last_error = exc
+
+        log(f"   ! Groq attempt {attempt + 1}: {last_error}")
+        if attempt < GROQ_ATTEMPTS - 1:
+            delay = min(45, 6 * (2 ** attempt))
+            log(f"     menunggu {delay} detik sebelum mencoba lagi...")
+            time.sleep(delay)
+
+    raise RuntimeError(f"Semua percobaan Groq gagal: {last_error}")
+
+
+def analyze_news(prompt: str) -> str:
+    """
+    Coba tiap penyedia berurutan. Satu penyedia tumbang bukan alasan laporan
+    harian ikut gagal -- Gemini dan Groq perusahaan dan infrastrukturnya beda.
+    """
+    providers = {"gemini": analyze_with_gemini, "groq": analyze_with_groq}
+    available = [
+        name
+        for name in LLM_ORDER
+        if name in providers
+        and (GEMINI_API_KEY if name == "gemini" else GROQ_API_KEY)
+    ]
+
+    if not available:
+        raise RuntimeError(
+            "Tidak ada penyedia AI yang siap. Isi GEMINI_API_KEY atau GROQ_API_KEY."
+        )
+
+    log(f"   . Urutan penyedia: {' -> '.join(available)}")
+    errors: list[str] = []
+
+    for name in available:
+        try:
+            return providers[name](prompt)
+        except Exception as exc:
+            log(f"   ! Penyedia {name} gagal, lanjut ke berikutnya.")
+            errors.append(f"{name}: {exc}")
+
+    raise RuntimeError(" | ".join(errors))
+
+
 # --------------------------------------------------------------------------- #
 # Telegram
 # --------------------------------------------------------------------------- #
 
-TELEGRAM_LIMIT = 3600
+TELEGRAM_LIMIT = 4000  # batas keras Telegram 4096, sisakan ruang aman
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -527,25 +632,57 @@ def markdown_to_telegram_html(text: str) -> str:
     text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)
     text = re.sub(r"^\s*[\*\-\u2022]\s+", "• ", text, flags=re.M)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.S)
+    # Gemini sering memakai *satu bintang* untuk miring. Tanpa baris ini,
+    # bintangnya muncul mentah di pesan Telegram.
+    text = re.sub(r"\*([^*\n]{1,120}?)\*", r"<i>\1</i>", text)
     text = re.sub(r"(?<!\w)_([^_\n]{1,120})_(?!\w)", r"<i>\1</i>", text)
     text = re.sub(r"`([^`\n]{1,200})`", r"<code>\1</code>", text)
+    # Sisa bintang yatim (pasangannya hilang) dibuang supaya tidak terlihat.
+    text = text.replace("*", "")
+    text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
 def chunk_text(text: str, limit: int = TELEGRAM_LIMIT) -> list[str]:
-    chunks, current = [], ""
-    for line in text.split("\n"):
-        if len(current) + len(line) + 1 > limit:
-            if current.strip():
-                chunks.append(current.rstrip())
-            current = ""
+    """
+    Potong di batas paragraf dulu, baru baris, baru karakter. Tujuannya supaya
+    satu bagian laporan tidak pernah terbelah di tengah kalimat.
+    """
+    chunks: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current.strip():
+            chunks.append(current.strip())
+        current = ""
+
+    for block in text.split("\n\n"):
+        candidate = f"{current}\n\n{block}" if current else block
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        flush()
+        if len(block) <= limit:
+            current = block
+            continue
+
+        # Satu paragraf sendirian kepanjangan: pecah per baris.
+        for line in block.split("\n"):
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) <= limit:
+                current = candidate
+                continue
+            flush()
             while len(line) > limit:
                 chunks.append(line[:limit])
                 line = line[limit:]
-        current += line + "\n"
-    if current.strip():
-        chunks.append(current.rstrip())
+            current = line
+        flush()
+
+    flush()
     return chunks or [text[:limit]]
 
 
@@ -660,9 +797,9 @@ def main() -> int:
     )
 
     try:
-        summary = analyze_with_gemini(prompt)
+        summary = analyze_news(prompt)
     except Exception as exc:
-        log(f"Gemini gagal total: {exc}")
+        log(f"Semua penyedia AI gagal: {exc}")
         fallback = header + "⚠️ Analisis AI gagal. Berikut headline mentahnya:\n\n" + "\n".join(
             f"• {item['title']} ({item['source']})" for item in items[:30]
         )
