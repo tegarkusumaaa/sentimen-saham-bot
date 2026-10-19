@@ -2,31 +2,50 @@ name: Daily Stock Sentiment Bot
 
 on:
   schedule:
-    # 00:00 UTC = 07:00 WIB (Jakarta)
-    - cron: '0 0 * * *'
+    # 23:45 UTC = 06:45 WIB. Sengaja dimajukan ~15 menit karena scheduler
+    # GitHub Actions sering telat 5-20 menit saat antrean padat,
+    # sehingga pesan tetap mendarat sekitar jam 7 pagi WIB.
+    - cron: '45 23 * * *'
   workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Tampilkan semua headline di log'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-stock-sentiment
+  cancel-in-progress: false
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Execute Bot Script
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: python main.py
+      - name: Execute Bot Script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LOOKBACK_HOURS: '30'
+          MIN_ITEMS: '8'
+          DEBUG: ${{ github.event.inputs.debug == 'true' && '1' || '0' }}
+        run: python main.py
