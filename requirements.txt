@@ -1,5 +1,5 @@
-google-genai
-yfinance
-python-telegram-bot
-requests
-pandas
+requests>=2.32
+feedparser>=6.0.11
+yfinance>=0.2.54
+pandas>=2.2
+google-genai>=1.0
