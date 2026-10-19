@@ -1,0 +1,5 @@
+google-genai
+yfinance
+python-telegram-bot
+requests
+pandas
