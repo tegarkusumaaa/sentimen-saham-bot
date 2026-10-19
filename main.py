@@ -39,9 +39,15 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 GEMINI_MODELS = [
-    os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip(),
-    "gemini-2.0-flash",
+    os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip(),
+    "gemini-flash-latest",
+    "gemini-3.8-flash",
 ]
+
+# Berapa kali tiap model dicoba sebelum pindah ke model berikutnya.
+# Error 503 ("high demand") dari Google bersifat sementara, jadi menunggu
+# lebih lama jauh lebih berguna daripada langsung menyerah.
+GEMINI_ATTEMPTS = int(os.environ.get("GEMINI_ATTEMPTS", "4"))
 
 # Berapa jam ke belakang berita dianggap relevan. 30 jam = 24 jam + buffer,
 # karena jam publikasi RSS sering tidak presisi.
@@ -472,8 +478,13 @@ def analyze_with_gemini(prompt: str) -> str:
     client = genai.Client(api_key=GEMINI_API_KEY)
     last_error: Exception | None = None
 
-    for model in [m for m in GEMINI_MODELS if m]:
-        for attempt in range(2):
+    models: list[str] = []
+    for name in GEMINI_MODELS:
+        if name and name not in models:
+            models.append(name)
+
+    for model in models:
+        for attempt in range(GEMINI_ATTEMPTS):
             try:
                 kwargs = {"model": model, "contents": prompt}
                 if config is not None:
@@ -490,7 +501,10 @@ def analyze_with_gemini(prompt: str) -> str:
             except Exception as exc:
                 last_error = exc
                 log(f"   ! Gemini {model} attempt {attempt + 1}: {exc}")
-                time.sleep(4 + attempt * 4)
+                if attempt < GEMINI_ATTEMPTS - 1:
+                    delay = min(60, 8 * (2 ** attempt))
+                    log(f"     menunggu {delay} detik sebelum mencoba lagi...")
+                    time.sleep(delay)
 
     raise RuntimeError(f"Semua percobaan Gemini gagal: {last_error}")
 
